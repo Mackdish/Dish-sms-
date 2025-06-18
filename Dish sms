@@ -1,0 +1,164 @@
+// === backend/main.ts ===
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { ValidationPipe } from '@nestjs/common';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(new ValidationPipe());
+  app.useGlobalFilters(new HttpExceptionFilter(), new AllExceptionsFilter());
+  app.useWebSocketAdapter(new IoAdapter(app));
+  app.enableCors();
+  await app.listen(5000);
+}
+bootstrap();
+
+// === backend/app.module.ts ===
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { AuthModule } from './auth/auth.module';
+import { StudentsModule } from './students/students.module';
+import { FeesModule } from './fees/fees.module';
+import { ExamsModule } from './exams/exams.module';
+import { StaffModule } from './staff/staff.module';
+import { AttendanceModule } from './attendance/attendance.module';
+import { UsersModule } from './users/users.module';
+import { ReportsModule } from './reports/reports.module';
+import { CashbookModule } from './cashbook/cashbook.module';
+import { AnalyticsGateway } from './common/gateways/analytics.gateway';
+import { SmsService } from './notifications/sms.service';
+
+@Module({
+  imports: [
+    MongooseModule.forRoot(process.env.MONGODB_URI),
+    AuthModule,
+    StudentsModule,
+    FeesModule,
+    ExamsModule,
+    StaffModule,
+    AttendanceModule,
+    UsersModule,
+    ReportsModule,
+    CashbookModule,
+  ],
+  providers: [AnalyticsGateway, SmsService],
+})
+export class AppModule {}
+
+// === backend/notifications/sms.service.ts ===
+import { Injectable } from '@nestjs/common';
+import * as africastalking from 'africastalking';
+
+@Injectable()
+export class SmsService {
+  private readonly sms;
+
+  constructor() {
+    const at = africastalking({
+      apiKey: process.env.AT_API_KEY,
+      username: process.env.AT_USERNAME,
+    });
+    this.sms = at.SMS;
+  }
+
+  async sendReminder(to: string, message: string) {
+    return this.sms.send({ to: [`+254${to}`], message });
+  }
+}
+
+// === backend/utils/csv.ts ===
+import * as csvParser from 'csv-parser';
+import * as fs from 'fs';
+
+export const parseCsv = async (filePath: string) => {
+  return new Promise((resolve, reject) => {
+    const results = [];
+    fs.createReadStream(filePath)
+      .pipe(csvParser())
+      .on('data', (data) => results.push(data))
+      .on('end', () => resolve(results))
+      .on('error', (error) => reject(error));
+  });
+};
+
+// === backend/fees/fees.service.ts ===
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Fee, FeeDocument } from './schemas/fee.schema';
+import { CreateFeeDto } from './dto/create-fee.dto';
+import { SmsService } from '../notifications/sms.service';
+
+@Injectable()
+export class FeesService {
+  constructor(
+    @InjectModel(Fee.name) private model: Model<FeeDocument>,
+    private readonly smsService: SmsService
+  ) {}
+
+  async create(dto: CreateFeeDto) {
+    const fee = await this.model.create(dto);
+    await this.smsService.sendReminder(dto.studentPhone, `Payment of KES ${dto.amount} received.`);
+    return fee;
+  }
+
+  async findAll(skip = 0, limit = 10) {
+    return this.model.find().skip(skip).limit(limit).exec();
+  }
+
+  async sendFeeReminders() {
+    const unpaid = await this.model.find({ paid: false });
+    for (const record of unpaid) {
+      await this.smsService.sendReminder(record.studentPhone, `Reminder: You have an unpaid balance of KES ${record.amount}.`);
+    }
+  }
+}
+
+// === backend/fees/fees.controller.ts ===
+import { Controller, Post, Body, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { FeesService } from './fees.service';
+import { CreateFeeDto } from './dto/create-fee.dto';
+import { parseCsv } from '../utils/csv';
+
+@Controller('fees')
+export class FeesController {
+  constructor(private readonly feesService: FeesService) {}
+
+  @Post()
+  create(@Body() dto: CreateFeeDto) {
+    return this.feesService.create(dto);
+  }
+
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadCsv(@UploadedFile() file: Express.Multer.File) {
+    const records = await parseCsv(file.path);
+    const inserted = await Promise.all(records.map(r => this.feesService.create(r)));
+    return { count: inserted.length };
+  }
+}
+
+// === backend/auth/auth.controller.ts ===
+import { Controller, Post, Body } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Post('register')
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
+  }
+
+  @Post('login')
+  login(@Body() dto: LoginDto) {
+    return this.authService.login(dto);
+  }
+}
