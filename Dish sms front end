@@ -1,0 +1,165 @@
+// === frontend/src/App.tsx ===
+import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
+import LoginForm from './components/LoginForm';
+import RegisterForm from './components/RegisterForm';
+import StudentForm from './components/StudentForm';
+import FeeForm from './components/FeeForm';
+import ExamForm from './components/ExamForm';
+import UserForm from './components/UserForm';
+import Dashboard from './components/Dashboard';
+import SidebarLayout from './components/SidebarLayout';
+import ProtectedRoute from './components/ProtectedRoute';
+import { Toaster } from 'react-hot-toast';
+
+function App() {
+  return (
+    <Router>
+      <Toaster position="top-right" />
+      <Routes>
+        <Route path="/login" element={<LoginForm />} />
+        <Route path="/register" element={<RegisterForm />} />
+
+        <Route element={<ProtectedRoute><SidebarLayout /></ProtectedRoute>}>
+          <Route path="/students" element={<StudentForm />} />
+          <Route path="/fees" element={<FeeForm />} />
+          <Route path="/exams" element={<ExamForm />} />
+          <Route path="/users" element={<UserForm />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+        </Route>
+
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
+
+// === frontend/src/components/SidebarLayout.tsx ===
+import { Link, Outlet } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+
+export default function SidebarLayout() {
+  const [role, setRole] = useState('');
+
+  useEffect(() => {
+    const tokenPayload = JSON.parse(atob(localStorage.getItem('token')?.split('.')[1] || 'e30='));
+    setRole(tokenPayload.role);
+  }, []);
+
+  return (
+    <div className="flex flex-col md:flex-row h-screen">
+      <aside className="w-full md:w-64 bg-gray-800 text-white p-4 space-y-4">
+        <h1 className="text-xl font-bold">Dashboard</h1>
+        <nav className="space-y-2">
+          <Link to="/dashboard" className="block">Home</Link>
+          <Link to="/students" className="block">Students</Link>
+          <Link to="/fees" className="block">Fees</Link>
+          <Link to="/exams" className="block">Exams</Link>
+          {role === 'admin' && <Link to="/users" className="block">Users</Link>}
+        </nav>
+      </aside>
+      <main className="flex-1 p-6 overflow-y-auto">
+        <Outlet />
+      </main>
+    </div>
+  );
+}
+
+// === frontend/src/components/FeeForm.tsx ===
+import { useState } from 'react';
+import axios from 'axios';
+import toast from 'react-hot-toast';
+
+export default function FeeForm() {
+  const [form, setForm] = useState({ studentPhone: '', amount: 0 });
+  const [file, setFile] = useState<File | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await axios.post('/fees', form, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      toast.success('Fee submitted successfully');
+    } catch {
+      toast.error('Error submitting fee');
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      await axios.post('/fees/upload', formData, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      toast.success('CSV uploaded successfully');
+    } catch {
+      toast.error('CSV upload failed');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <input placeholder="Student Phone" onChange={e => setForm({ ...form, studentPhone: e.target.value })} className="input w-full" />
+        <input placeholder="Amount" type="number" onChange={e => setForm({ ...form, amount: Number(e.target.value) })} className="input w-full" />
+        <button type="submit" className="btn w-full">Submit Fee</button>
+      </form>
+
+      <div className="space-y-2">
+        <input type="file" onChange={e => setFile(e.target.files?.[0] || null)} className="input w-full" />
+        <button onClick={handleUpload} className="btn w-full">Upload CSV</button>
+      </div>
+    </div>
+  );
+}
+
+// === frontend/src/components/Dashboard.tsx ===
+import { useEffect, useState } from 'react';
+import axios from 'axios';
+import { Bar, Pie, Line } from 'react-chartjs-2';
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, PointElement, LineElement, ArcElement } from 'chart.js';
+
+ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, ArcElement);
+
+export default function Dashboard() {
+  const [data, setData] = useState<any[]>([]);
+
+  useEffect(() => {
+    axios.get('/reports/fee-summary', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+    }).then(res => setData(res.data));
+  }, []);
+
+  const labels = data.map(d => d._id);
+  const totals = data.map(d => d.totalPaid);
+
+  const barData = {
+    labels,
+    datasets: [{ label: 'Total Fees Paid', data: totals, backgroundColor: 'rgba(54, 162, 235, 0.6)' }],
+  };
+
+  const lineData = {
+    labels,
+    datasets: [{ label: 'Fee Trend', data: totals, borderColor: 'rgba(75, 192, 192, 1)', fill: false }],
+  };
+
+  const pieData = {
+    labels,
+    datasets: [{ data: totals, backgroundColor: ['#4dc9f6', '#f67019', '#f53794', '#537bc4'] }],
+  };
+
+  return (
+    <div className="space-y-8">
+      <h1 className="text-2xl font-bold">Analytics</h1>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div><Bar data={barData} /></div>
+        <div><Line data={lineData} /></div>
+        <div><Pie data={pieData} /></div>
+      </div>
+    </div>
+  );
+}
